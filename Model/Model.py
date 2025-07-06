@@ -172,17 +172,17 @@ def create_model(config):
 # MAIN EXECUTION
 # ========================================
 
-if __name__ == "__main__":
-    # Create model
-    print("\nCreating model...")
-    model = create_model(config).to(device)
-    print("Model created.")
-    
-    print(f"Model has {count_parameters(model):,} trainable parameters")
+#if __name__ == "__main__":
+#    # Create model
+#    print("\nCreating model...")
+#    model = create_model(config).to(device)
+#    print("Model created.")
+#    
+#    print(f"Model has {count_parameters(model):,} trainable parameters")
     
     # Start training
-    print(f"\nStarting training on {dataset_info['name'].upper()} with {dataset_info['num_classes']} classes...")
-    training_results = train_model(model, train_loader, test_loader, config, device)
+#    print(f"\nStarting training on {dataset_info['name'].upper()} with {dataset_info['num_classes']} classes...")
+#    training_results = train_model(model, train_loader, test_loader, config, device)
     
-    print("Training completed successfully!")
+#    print("Training completed successfully!")
 
