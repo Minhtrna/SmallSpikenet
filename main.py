@@ -32,10 +32,10 @@ LEARNING_RATE = 0.001
 DEVICE = 'auto'             # 'auto', 'cpu', 'cuda'
 
 # === MODEL SETTINGS ===
-NUM_TIMESTEPS = 2           # SNN timesteps (1-4)
-WIDTH_MULT = 1.0           # Model size (0.5-2.0)
-INIT_THRESHOLD = 0.5       # Neuron threshold (0.2-0.8)
-DROPOUT_RATE = 0.2         # Dropout (0.0-0.5)
+NUM_TIMESTEPS = 2           # SNN timesteps 
+WIDTH_MULT = 1.0           # Model size 
+INIT_THRESHOLD = 1.0       # Neuron threshold 
+DROPOUT_RATE = 0.2         # Dropout 
 
 # === SNN NEURON SETTINGS ===
 NUM_THRESHOLDS = 4         # Multi-threshold levels (2-8)
