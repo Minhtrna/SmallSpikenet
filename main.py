@@ -357,7 +357,7 @@ def main():
             best_acc = test_acc
             if SAVE_FINAL:
                 save_checkpoint(model, epoch, train_loss, test_acc)
-                print(f"  🏆 New best accuracy: {best_acc:.2f}%")
+                print(f"New best accuracy: {best_acc:.2f}%")
         
         # Save periodic checkpoint
         if (epoch + 1) % SAVE_EVERY == 0:
