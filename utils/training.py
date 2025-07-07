@@ -7,15 +7,9 @@ import time
 import os
 import numpy as np
 import psutil
-
+import pynvml
+pynvml.nvmlInit()
 # Add energy measurement imports
-try:
-    import pynvml
-    NVML_AVAILABLE = True
-    pynvml.nvmlInit()
-except ImportError:
-    NVML_AVAILABLE = False
-    print("Warning: pynvml not available. GPU energy measurement will be estimated.")
 
 # ========================================
 # ENERGY MONITORING

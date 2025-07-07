@@ -3,9 +3,6 @@ import torch.nn as nn
 import sys
 import os
 from Neurons import LM_HT_LIF
-
-# Add parent directory to path to import neurons
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from Neurons.neurons import LM_HT_LIF
 
 class ConvBNLIF(nn.Module):

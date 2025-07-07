@@ -189,7 +189,6 @@ class LM_HT_LIF(neuron.BaseNode):
             reset_amount = spike_for_reset * threshold_unit
             
             # Apply soft reset for non-max spikes: v = v - reset_amount
-            # This is similar to: v = v - (spike * threshold_unit)
             soft_reset = self.v - reset_amount * (1.0 - max_spike_float)
             
             # For max spikes, apply hard reset with small residual (5%)
@@ -247,9 +246,6 @@ class LM_HT_LIF(neuron.BaseNode):
     def reset(self):
         """Reset all state variables in spikingjelly-compatible way"""
         super().reset()
-        
-        # spikingjelly style: keep v and memory as None or scalar values after reset
-        # instead of keeping tensors to save memory when not in use
         self.v = None
         self.memory = None
         self.spike_counter = None
