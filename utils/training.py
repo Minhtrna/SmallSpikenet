@@ -34,7 +34,8 @@ class EnergyMonitor:
         if self.gpu_available:
             try:
                 self.gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                self.gpu_max_power = pynvml.nvmlDeviceGetMaxPowerManagement(self.gpu_handle) / 1000.0  # Convert to watts
+                # Fix: use the correct function name
+                self.gpu_max_power = pynvml.nvmlDeviceGetPowerManagementLimit(self.gpu_handle) / 1000.0  # Convert to watts
                 print(f"GPU max power: {self.gpu_max_power:.2f}W")
             except Exception as e:
                 print(f"Warning: Could not initialize GPU power monitoring: {e}")

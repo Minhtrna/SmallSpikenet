@@ -321,7 +321,6 @@ def main():
     # Training tracking
     train_losses = []
     train_accs = []
-    test_accs = []
     best_acc = 0.0
     
     print(f"\nStarting training...")
@@ -329,14 +328,11 @@ def main():
     
     start_time = time.time()
     
-    # Training loop
+    # Training loop - Run all epochs without testing between epochs
     for epoch in range(NUM_EPOCHS):
         
         # Train one epoch
         train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion, epoch)
-        
-        # Test accuracy
-        test_acc = test_model(model, test_loader)
         
         # Update scheduler
         if scheduler is not None:
@@ -345,23 +341,14 @@ def main():
         # Store results
         train_losses.append(train_loss)
         train_accs.append(train_acc)
-        test_accs.append(test_acc)
         
         # Print results
         print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
         print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-        print(f"  Test Acc: {test_acc:.2f}%")
-        
-        # Save best model
-        if test_acc > best_acc:
-            best_acc = test_acc
-            if SAVE_FINAL:
-                save_checkpoint(model, epoch, train_loss, test_acc)
-                print(f"New best accuracy: {best_acc:.2f}%")
         
         # Save periodic checkpoint
         if (epoch + 1) % SAVE_EVERY == 0:
-            save_checkpoint(model, epoch, train_loss, test_acc)
+            save_checkpoint(model, epoch, train_loss, 0)  # No test_acc during training
         
         print("-" * 30)
     
@@ -370,21 +357,51 @@ def main():
     
     print(f"\nTraining completed!")
     print(f"Training time: {training_time/60:.2f} minutes")
-    print(f"Best test accuracy: {best_acc:.2f}%")
-    print(f"Models saved in: {SAVE_DIR}")
+    
+    # After training completes, run comprehensive inference testing
+    print("\nPerforming inference benchmark testing...")
+    
+    # Import necessary classes from utils.training
+    sys.path.append('utils')
+    from utils.training import EnergyMonitor, InferenceBenchmark
+    
+    # Create energy monitor
+    energy_monitor = EnergyMonitor(device)
+    
+    # Create inference benchmark
+    inference_benchmark = InferenceBenchmark(model, device, energy_monitor)
+    
+    # Run benchmark (use 50 batches for more comprehensive results)
+    benchmark_results = inference_benchmark.benchmark_inference(test_loader, num_batches=50)
+    
+    # Print benchmark results
+    inference_benchmark.print_benchmark_results(benchmark_results)
+    
+    # Calculate final test accuracy
+    test_acc = test_model(model, test_loader)
+    print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
+    best_acc = test_acc
     
     # Save final model
     if SAVE_FINAL:
         final_path = os.path.join(SAVE_DIR, 'model_final.pth')
-        torch.save(model.state_dict(), final_path)
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'final_accuracy': test_acc,
+            'benchmark_results': benchmark_results,
+            'config': create_config()
+        }, final_path)
         print(f"Final model saved: {final_path}")
+    
+    print(f"Models saved in: {SAVE_DIR}")
     
     return {
         'train_losses': train_losses,
         'train_accs': train_accs,
-        'test_accs': test_accs,
+        'test_acc': test_acc,
         'best_accuracy': best_acc,
-        'training_time': training_time
+        'training_time': training_time,
+        'benchmark_results': benchmark_results
     }
 
 # ========================================
