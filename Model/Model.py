@@ -5,8 +5,6 @@ import sys
 from utils.config import get_config, print_config, validate_config
 from utils.training import train_model, test_model, count_parameters
 from utils.datasets import create_dataloaders, validate_dataset_config
-
-# Import building blocks
 from Blocks import ConvBNLIF, SimpleInvertedResidual
 
 # ========================================
