@@ -1,6 +1,5 @@
 """
 Configuration file for SmallSpikenet training
-All hyperparameters are centralized here for easy tuning
 """
 
 # ========================================
