@@ -103,103 +103,180 @@ class EnergyMonitor:
 
 class FLOPsCounter:
     """
-    Count FLOPs (Floating Point Operations) for the model
+    Count FLOPs (Floating Point Operations) for the model based on known architecture
     """
     def __init__(self, model):
         self.model = model
         self.total_flops = 0
         self.total_params = 0
+        # Get model configuration
+        self.num_timesteps = getattr(model, 'num_timesteps', 2)
+        self.width_mult = getattr(model, 'width_mult', 1.0)  # Default from config
     
-    def count_conv2d_flops(self, input_shape, weight_shape, stride=1, padding=0, groups=1):
+    def count_conv2d_flops(self, input_shape, out_channels, kernel_size=3, stride=1, padding=1, groups=1):
         """Count FLOPs for Conv2d layer"""
         batch_size, in_channels, input_height, input_width = input_shape
-        out_channels, in_channels_per_group, kernel_height, kernel_width = weight_shape
         
-        output_height = (input_height + 2 * padding - kernel_height) // stride + 1
-        output_width = (input_width + 2 * padding - kernel_width) // stride + 1
+        # Calculate output dimensions
+        output_height = (input_height + 2 * padding - kernel_size) // stride + 1
+        output_width = (input_width + 2 * padding - kernel_size) // stride + 1
         
-        # FLOPs = batch_size * output_height * output_width * out_channels * 
-        #         (in_channels_per_group * kernel_height * kernel_width + 1) # +1 for bias if present
-        kernel_flops = in_channels_per_group * kernel_height * kernel_width
+        # Calculate FLOPs
+        kernel_flops = (in_channels // groups) * kernel_size * kernel_size
         output_elements = batch_size * output_height * output_width * out_channels
         flops = output_elements * kernel_flops
         
         return flops, (batch_size, out_channels, output_height, output_width)
     
-    def count_linear_flops(self, input_shape, weight_shape):
+    def count_linear_flops(self, input_shape, out_features):
         """Count FLOPs for Linear layer"""
         batch_size = input_shape[0]
-        in_features, out_features = weight_shape
+        in_features = input_shape[1]
         flops = batch_size * in_features * out_features
-        return flops, (batch_size, out_features)
+        return flops
+    
+    def count_batchnorm_flops(self, input_shape):
+        """Count FLOPs for BatchNorm layer (normalization + scale + shift)"""
+        batch_size, channels, height, width = input_shape
+        # 4 operations per element: (x-mean)/std, scale, shift, variance calc
+        flops = batch_size * channels * height * width * 4
+        return flops
+    
+    def count_snn_neuron_flops(self, input_shape):
+        """Count FLOPs for LM-HT-LIF neuron operations per timestep"""
+        batch_size, channels, height, width = input_shape
+        elements = batch_size * channels * height * width
+        # LM-HT-LIF operations per timestep per element:
+        # - Membrane potential update: 2 ops (leak + input)
+        # - Multi-threshold comparison: 1 op
+        # - Spike generation: 1 op  
+        # - Reset mechanism: 1 op
+        ops_per_element = 5
+        flops = elements * ops_per_element
+        return flops
+    
+    def count_convbnlif_flops(self, input_shape, out_channels, kernel_size=3, stride=1, groups=1):
+        """Count FLOPs for ConvBNLIF block"""
+        # Conv2d FLOPs
+        conv_flops, output_shape = self.count_conv2d_flops(
+            input_shape, out_channels, kernel_size, stride, kernel_size//2, groups
+        )
+        
+        # BatchNorm FLOPs
+        bn_flops = self.count_batchnorm_flops(output_shape)
+        
+        # LM-HT-LIF neuron FLOPs (per timestep)
+        neuron_flops = self.count_snn_neuron_flops(output_shape)
+        
+        total_flops = conv_flops + bn_flops + neuron_flops
+        return total_flops, output_shape
+    
+    def count_inverted_residual_flops(self, input_shape, inp, oup, stride=1, expand_ratio=6):
+        """Count FLOPs for SimpleInvertedResidual block"""
+        hidden_dim = int(round(inp * expand_ratio))
+        total_flops = 0
+        current_shape = input_shape
+        
+        # 1. Expansion: 1x1 ConvBNLIF inp -> hidden_dim
+        expansion_flops, current_shape = self.count_convbnlif_flops(
+            current_shape, hidden_dim, kernel_size=1, stride=1, groups=1
+        )
+        total_flops += expansion_flops
+        
+        # 2. Depthwise: 3x3 ConvBNLIF hidden_dim -> hidden_dim (groups=hidden_dim)
+        depthwise_flops, current_shape = self.count_convbnlif_flops(
+            current_shape, hidden_dim, kernel_size=3, stride=stride, groups=hidden_dim
+        )
+        total_flops += depthwise_flops
+        
+        # 3. Projection: 1x1 Conv + BN hidden_dim -> oup (no LIF)
+        proj_conv_flops, current_shape = self.count_conv2d_flops(
+            current_shape, oup, kernel_size=1, stride=1, padding=0, groups=1
+        )
+        proj_bn_flops = self.count_batchnorm_flops(current_shape)
+        total_flops += proj_conv_flops + proj_bn_flops
+        
+        # 4. Residual connection (if applicable)
+        if stride == 1 and inp == oup:
+            # Element-wise addition
+            batch_size, channels, height, width = current_shape
+            total_flops += batch_size * channels * height * width
+        
+        return total_flops, current_shape
     
     def estimate_model_flops(self, input_shape=(1, 3, 32, 32)):
-        """Estimate total FLOPs for one forward pass"""
+        """Calculate FLOPs based on known MiniMobileNetV2LIF architecture"""
         self.total_flops = 0
         current_shape = input_shape
         
-        # Track through model layers
+        # Calculate channel dimensions based on width_mult
+        input_channel = int(48 * self.width_mult)    # 72 channels
+        mid_channel = int(96 * self.width_mult)      # 144 channels  
+        mid_channel2 = int(128 * self.width_mult)    # 192 channels
+        last_channel = int(1280 * self.width_mult)   # 1920 channels
+        
+        print(f"Model architecture FLOPs calculation:")
+        print(f"Input shape: {current_shape}")
+        print(f"Channels: {input_channel}, {mid_channel}, {mid_channel2}, {last_channel}")
+        
         # Layer 1: ConvBNLIF(3, 72, stride=2)
-        flops, current_shape = self.count_conv2d_flops(current_shape, (72, 3, 3, 3), stride=2, padding=1)
-        self.total_flops += flops
+        layer1_flops, current_shape = self.count_convbnlif_flops(
+            current_shape, input_channel, kernel_size=3, stride=2
+        )
+        self.total_flops += layer1_flops
+        print(f"Layer1 ConvBNLIF: {layer1_flops:,} FLOPs, shape: {current_shape}")
         
         # Layer 2: SimpleInvertedResidual(72, 144, stride=2, expand_ratio=6)
-        # Expansion: 1x1 conv 72 -> 432
-        flops, temp_shape = self.count_conv2d_flops(current_shape, (432, 72, 1, 1))
-        self.total_flops += flops
-        # Depthwise: 3x3 depthwise conv 432 -> 432 with stride=2
-        flops, temp_shape = self.count_conv2d_flops(temp_shape, (432, 1, 3, 3), stride=2, padding=1, groups=432)
-        self.total_flops += flops
-        # Projection: 1x1 conv 432 -> 144
-        flops, current_shape = self.count_conv2d_flops(temp_shape, (144, 432, 1, 1))
-        self.total_flops += flops
+        layer2_flops, current_shape = self.count_inverted_residual_flops(
+            current_shape, input_channel, mid_channel, stride=2, expand_ratio=6
+        )
+        self.total_flops += layer2_flops
+        print(f"Layer2 InvRes: {layer2_flops:,} FLOPs, shape: {current_shape}")
         
         # Layer 3: SimpleInvertedResidual(144, 144, stride=1, expand_ratio=6)
-        # Expansion: 1x1 conv 144 -> 864
-        flops, temp_shape = self.count_conv2d_flops(current_shape, (864, 144, 1, 1))
-        self.total_flops += flops
-        # Depthwise: 3x3 depthwise conv 864 -> 864
-        flops, temp_shape = self.count_conv2d_flops(temp_shape, (864, 1, 3, 3), padding=1, groups=864)
-        self.total_flops += flops
-        # Projection: 1x1 conv 864 -> 144
-        flops, current_shape = self.count_conv2d_flops(temp_shape, (144, 864, 1, 1))
-        self.total_flops += flops
+        layer3_flops, current_shape = self.count_inverted_residual_flops(
+            current_shape, mid_channel, mid_channel, stride=1, expand_ratio=6
+        )
+        self.total_flops += layer3_flops
+        print(f"Layer3 InvRes: {layer3_flops:,} FLOPs, shape: {current_shape}")
         
         # Layer 4: SimpleInvertedResidual(144, 192, stride=2, expand_ratio=6)
-        # Expansion: 1x1 conv 144 -> 864
-        flops, temp_shape = self.count_conv2d_flops(current_shape, (864, 144, 1, 1))
-        self.total_flops += flops
-        # Depthwise: 3x3 depthwise conv 864 -> 864 with stride=2
-        flops, temp_shape = self.count_conv2d_flops(temp_shape, (864, 1, 3, 3), stride=2, padding=1, groups=864)
-        self.total_flops += flops
-        # Projection: 1x1 conv 864 -> 192
-        flops, current_shape = self.count_conv2d_flops(temp_shape, (192, 864, 1, 1))
-        self.total_flops += flops
+        layer4_flops, current_shape = self.count_inverted_residual_flops(
+            current_shape, mid_channel, mid_channel2, stride=2, expand_ratio=6
+        )
+        self.total_flops += layer4_flops
+        print(f"Layer4 InvRes: {layer4_flops:,} FLOPs, shape: {current_shape}")
         
         # Layer 5: SimpleInvertedResidual(192, 192, stride=1, expand_ratio=6)
-        # Expansion: 1x1 conv 192 -> 1152
-        flops, temp_shape = self.count_conv2d_flops(current_shape, (1152, 192, 1, 1))
-        self.total_flops += flops
-        # Depthwise: 3x3 depthwise conv 1152 -> 1152
-        flops, temp_shape = self.count_conv2d_flops(temp_shape, (1152, 1, 3, 3), padding=1, groups=1152)
-        self.total_flops += flops
-        # Projection: 1x1 conv 1152 -> 192
-        flops, current_shape = self.count_conv2d_flops(temp_shape, (192, 1152, 1, 1))
-        self.total_flops += flops
+        layer5_flops, current_shape = self.count_inverted_residual_flops(
+            current_shape, mid_channel2, mid_channel2, stride=1, expand_ratio=6
+        )
+        self.total_flops += layer5_flops
+        print(f"Layer5 InvRes: {layer5_flops:,} FLOPs, shape: {current_shape}")
         
         # Layer 6: ConvBNLIF(192, 1920, kernel_size=1)
-        flops, current_shape = self.count_conv2d_flops(current_shape, (1920, 192, 1, 1))
-        self.total_flops += flops
+        layer6_flops, current_shape = self.count_convbnlif_flops(
+            current_shape, last_channel, kernel_size=1, stride=1
+        )
+        self.total_flops += layer6_flops
+        print(f"Layer6 ConvBNLIF: {layer6_flops:,} FLOPs, shape: {current_shape}")
         
-        # Global Average Pooling (minimal FLOPs)
-        # Classifier: Linear(1920, 10)
-        # Flatten to (batch_size, 1920)
-        flat_shape = (input_shape[0], 1920)
-        flops, _ = self.count_linear_flops(flat_shape, (1920, 10))
-        self.total_flops += flops
+        # Global Average Pooling (negligible FLOPs)
+        gap_flops = current_shape[1] * current_shape[2] * current_shape[3]  # Sum operations
+        self.total_flops += gap_flops
+        
+        # Classifier: Linear(1920, num_classes)
+        num_classes = 10  # CIFAR-10
+        classifier_flops = self.count_linear_flops((input_shape[0], last_channel), num_classes)
+        self.total_flops += classifier_flops
+        print(f"Classifier Linear: {classifier_flops:,} FLOPs")
         
         # Multiply by number of timesteps
-        self.total_flops *= getattr(self.model, 'num_timesteps', 2)
+        single_timestep_flops = self.total_flops
+        self.total_flops *= self.num_timesteps
+        
+        print(f"\nSingle timestep FLOPs: {single_timestep_flops:,}")
+        print(f"Total FLOPs (×{self.num_timesteps} timesteps): {self.total_flops:,}")
         
         return self.total_flops
 
