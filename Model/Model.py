@@ -1,3 +1,8 @@
+
+"""
+SmallSpikenet Model Definition
+"""
+
 import torch
 import torch.nn as nn
 from Blocks import ConvBNLIF, SimpleInvertedResidual
