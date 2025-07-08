@@ -1,4 +1,4 @@
-    Learnable Multi-hierarchical Threshold Leaky Integrate-and-Fire Neuron
+    Learnable Multi-hierarchical Threshold Leaky Integrate-and-Fire Neuron theory
     with Hybrid Reset mechanism and Leaky Memory
 
     Key Formulas:
