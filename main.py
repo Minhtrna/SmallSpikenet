@@ -15,8 +15,8 @@ import os
 import sys
 
 # Add paths
-sys.path.append('Model')
-sys.path.append('utils')
+#sys.path.append('Model')
+#sys.path.append('utils')
 
 from Model.Model import create_model
 from utils.training import count_parameters
