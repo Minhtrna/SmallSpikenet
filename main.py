@@ -1,6 +1,7 @@
 """
-Simple Training Script for SmallSpikenet
-Easy to understand and customize all parameters
+Main execution script for training SmallSpikenet on CIFAR-10 or CIFAR-100 datasets.
+This script handles dataset loading, model creation, training, and testing.
+
 """
 import torch
 import torch.nn as nn
