@@ -17,58 +17,29 @@ pynvml.nvmlInit()
 
 class EnergyMonitor:
     """
-    Monitor energy consumption during training and inference
+    Monitor GPU energy consumption during training and inference
     """
     def __init__(self, device):
         self.device = device
-        self.gpu_available = device.type == 'cuda' and NVML_AVAILABLE
-        self.cpu_tdp = self._get_cpu_tdp()  # Thermal Design Power
+        self.gpu_available = device.type == 'cuda'
         self.gpu_handle = None
         
         if self.gpu_available:
             try:
                 self.gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                # Fix: use the correct function name
                 self.gpu_max_power = pynvml.nvmlDeviceGetPowerManagementLimit(self.gpu_handle) / 1000.0  # Convert to watts
                 print(f"GPU max power: {self.gpu_max_power:.2f}W")
             except Exception as e:
                 print(f"Warning: Could not initialize GPU power monitoring: {e}")
                 self.gpu_available = False
-        
-        print(f"CPU TDP: {self.cpu_tdp}W")
+        else:
+            print("Warning: GPU not available for power monitoring")
         
         # Energy tracking variables
         self.reset_measurements()
     
-    def _get_cpu_tdp(self):
-        """Estimate CPU TDP (Thermal Design Power) in watts"""
-        try:
-            # Try to get CPU info from Windows
-            if os.name == 'nt':
-                import wmi
-                c = wmi.WMI()
-                for processor in c.Win32_Processor():
-                    # Rough estimate based on CPU cores and frequency
-                    cores = processor.NumberOfCores
-                    freq = float(processor.MaxClockSpeed) / 1000.0  # Convert MHz to GHz
-                    # Rough TDP estimation: cores * frequency * scaling factor
-                    estimated_tdp = cores * freq * 15  # Rough scaling factor
-                    return min(estimated_tdp, 150)  # Cap at 150W
-        except:
-            pass
-        
-        # Fallback estimation based on CPU count
-        cpu_count = psutil.cpu_count()
-        if cpu_count <= 4:
-            return 65.0  # Low-power CPU
-        elif cpu_count <= 8:
-            return 95.0  # Mid-range CPU
-        else:
-            return 125.0  # High-end CPU
-    
     def reset_measurements(self):
         """Reset all energy measurements"""
-        self.total_cpu_energy = 0.0  # mJ
         self.total_gpu_energy = 0.0  # mJ
         self.measurement_count = 0
         self.start_time = None
@@ -79,44 +50,37 @@ class EnergyMonitor:
         self.reset_measurements()
         self.start_time = time.time()
     
-    def measure_instantaneous_power(self):
-        """Measure instantaneous power consumption"""
-        cpu_power = 0.0
+    def measure_gpu_power(self):
+        """Measure instantaneous GPU power consumption"""
         gpu_power = 0.0
         
-        # CPU power estimation based on utilization
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        cpu_power = self.cpu_tdp * (cpu_percent / 100.0)
-        
-        # GPU power measurement
         if self.gpu_available and self.gpu_handle:
             try:
                 gpu_power_mw = pynvml.nvmlDeviceGetPowerUsage(self.gpu_handle)
                 gpu_power = gpu_power_mw / 1000.0  # Convert mW to W
-            except:
+            except Exception as e:
                 # Fallback: estimate based on GPU utilization
                 try:
                     gpu_util = pynvml.nvmlDeviceGetUtilizationRates(self.gpu_handle)
                     gpu_power = self.gpu_max_power * (gpu_util.gpu / 100.0)
                 except:
+                    print(f"Warning: Could not measure GPU power: {e}")
                     gpu_power = 0.0
         
-        return cpu_power, gpu_power
+        return gpu_power
     
     def add_measurement(self, duration_ms=100):
-        """Add a power measurement over specified duration"""
-        cpu_power, gpu_power = self.measure_instantaneous_power()
+        """Add a GPU power measurement over specified duration"""
+        gpu_power = self.measure_gpu_power()
         
         # Convert power (W) to energy (mJ) over the measurement duration
         duration_s = duration_ms / 1000.0
-        cpu_energy_mj = cpu_power * duration_s * 1000  # W * s * 1000 = mJ
         gpu_energy_mj = gpu_power * duration_s * 1000  # W * s * 1000 = mJ
         
-        self.total_cpu_energy += cpu_energy_mj
         self.total_gpu_energy += gpu_energy_mj
         self.measurement_count += 1
         
-        return cpu_energy_mj, gpu_energy_mj
+        return gpu_energy_mj
     
     def end_measurement(self):
         """End energy measurement and return results"""
@@ -124,11 +88,9 @@ class EnergyMonitor:
         total_time = self.end_time - self.start_time if self.start_time else 0.0
         
         results = {
-            'cpu_energy_mj': self.total_cpu_energy,
             'gpu_energy_mj': self.total_gpu_energy,
-            'total_energy_mj': self.total_cpu_energy + self.total_gpu_energy,
+            'total_energy_mj': self.total_gpu_energy,  # Only GPU energy now
             'measurement_time_s': total_time,
-            'avg_cpu_power_w': self.total_cpu_energy / (total_time * 1000) if total_time > 0 else 0.0,
             'avg_gpu_power_w': self.total_gpu_energy / (total_time * 1000) if total_time > 0 else 0.0,
             'measurement_count': self.measurement_count
         }
