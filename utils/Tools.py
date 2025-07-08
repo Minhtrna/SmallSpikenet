@@ -1,3 +1,8 @@
+
+"""
+This file contains utilities for training and benchmarking SmallSpikenet models.
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
