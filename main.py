@@ -1,25 +1,18 @@
 """
 Main execution script for training SmallSpikenet on CIFAR-10 or CIFAR-100 datasets.
 This script handles dataset loading, model creation, training, and testing.
-
 """
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-import torchvision
-import torchvision.transforms as transforms
-from tqdm import tqdm
 import time
 import os
 import sys
 
 # Add paths
-#sys.path.append('Model')
-#sys.path.append('utils')
-
 from Model.Model import create_model
-from utils.training import count_parameters
+from utils.Tools import count_parameters, EnergyMonitor, InferenceBenchmark
+from utils.datasets import create_dataloaders, validate_dataset_config
 
 # ========================================
 # CONFIGURATION - EDIT THESE VALUES
@@ -49,12 +42,11 @@ WEIGHT_DECAY = 4e-5       # L2 regularization
 GRAD_CLIP_NORM = 1.0      # Gradient clipping
 LR_SCHEDULER = 'cosine'   # 'cosine', 'step', 'none'
 
-# === DATA AUGMENTATION ===
-USE_AUGMENTATION = True    # Enable data augmentation
-RANDOM_CROP_PADDING = 4   # Crop padding
-RANDOM_HORIZONTAL_FLIP = True
-RANDOM_ROTATION = 0       # Rotation degrees (0 = disabled)
-COLOR_JITTER = False      # Color augmentation
+# === DATA SETTINGS ===
+USE_AUTOAUGMENT = False   # Enable AutoAugment
+DATA_DIR = './data'       # Data directory
+NUM_WORKERS = 2           # DataLoader workers
+PIN_MEMORY = True         # Pin memory for faster GPU transfer
 
 # === SAVE SETTINGS ===
 SAVE_DIR = './checkpoints'
@@ -73,113 +65,39 @@ if DEBUG_MODE:
     BATCH_SIZE = 32
     print("DEBUG MODE: Reduced epochs and batch size")
 
-# Dataset configuration
-if DATASET == 'cifar10':
-    NUM_CLASSES = 10
-    DATASET_MEAN = (0.4914, 0.4822, 0.4465)
-    DATASET_STD = (0.2023, 0.1994, 0.2010)
-elif DATASET == 'cifar100':
-    NUM_CLASSES = 100
-    DATASET_MEAN = (0.5071, 0.4867, 0.4408)
-    DATASET_STD = (0.2675, 0.2565, 0.2761)
-else:
-    raise ValueError(f"Unsupported dataset: {DATASET}")
-
 # Device setup
 if DEVICE == 'auto':
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = torch.device(DEVICE)
 
-print(f" SmallSpikenet Training")
-print(f"Dataset: {DATASET.upper()} ({NUM_CLASSES} classes)")
+print(f"SmallSpikenet Training")
+print(f"Dataset: {DATASET.upper()}")
 print(f"Device: {device}")
 print(f"Epochs: {NUM_EPOCHS}")
 print(f"Batch size: {BATCH_SIZE}")
 print(f"Timesteps: {NUM_TIMESTEPS}")
 print(f"Threshold: {INIT_THRESHOLD}")
+print(f"AutoAugment: {USE_AUTOAUGMENT}")
 print("=" * 50)
 
 # ========================================
-# DATA LOADING
+# CONFIGURATION CREATION
 # ========================================
 
-def create_data_transforms():
-    """Create train and test transforms"""
-    
-    # Test transforms (no augmentation)
-    test_transforms = [
-        transforms.ToTensor(),
-        transforms.Normalize(DATASET_MEAN, DATASET_STD)
-    ]
-    
-    # Train transforms
-    train_transforms = []
-    
-    if USE_AUGMENTATION:
-        if RANDOM_CROP_PADDING > 0:
-            train_transforms.append(transforms.RandomCrop(32, padding=RANDOM_CROP_PADDING))
-        
-        if RANDOM_HORIZONTAL_FLIP:
-            train_transforms.append(transforms.RandomHorizontalFlip())
-        
-        if RANDOM_ROTATION > 0:
-            train_transforms.append(transforms.RandomRotation(RANDOM_ROTATION))
-        
-        if COLOR_JITTER:
-            train_transforms.append(transforms.ColorJitter(
-                brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1
-            ))
-    
-    # Add common transforms
-    train_transforms.extend([
-        transforms.ToTensor(),
-        transforms.Normalize(DATASET_MEAN, DATASET_STD)
-    ])
-    
-    return transforms.Compose(train_transforms), transforms.Compose(test_transforms)
+def create_dataset_config():
+    """Create configuration for dataset factory"""
+    config = {
+        'DATASET': DATASET,
+        'DATA_DIR': DATA_DIR,
+        'BATCH_SIZE': BATCH_SIZE,
+        'NUM_WORKERS': NUM_WORKERS,
+        'PIN_MEMORY': PIN_MEMORY,
+        'USE_AUTOAUGMENT': USE_AUTOAUGMENT,
+        'DROP_LAST': False
+    }
+    return config
 
-def create_dataloaders():
-    """Create train and test dataloaders"""
-    train_transform, test_transform = create_data_transforms()
-    
-    # Select dataset class
-    if DATASET == 'cifar10':
-        dataset_class = torchvision.datasets.CIFAR10
-    else:
-        dataset_class = torchvision.datasets.CIFAR100
-    
-    print("Loading datasets...")
-    
-    # Create datasets
-    train_dataset = dataset_class(
-        root='./data', train=True, download=True, transform=train_transform
-    )
-    test_dataset = dataset_class(
-        root='./data', train=False, download=True, transform=test_transform
-    )
-    
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-        num_workers=2, pin_memory=True
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=BATCH_SIZE, shuffle=False, 
-        num_workers=2, pin_memory=True
-    )
-    
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Test samples: {len(test_dataset)}")
-    print(f"Train batches: {len(train_loader)}")
-    print(f"Test batches: {len(test_loader)}")
-
-    return train_loader, test_loader
-
-# ========================================
-# MODEL CREATION
-# ========================================
-
-def create_config():
+def create_model_config():
     """Create configuration for model"""
     config = {
         'NUM_TIMESTEPS': NUM_TIMESTEPS,
@@ -190,20 +108,52 @@ def create_config():
         'MEMORY_FACTOR': MEMORY_FACTOR,
         'RESET_MODE': RESET_MODE,
         'DROPOUT_RATE': DROPOUT_RATE,
-        'NUM_CLASSES': NUM_CLASSES,
         'INPUT_SCALE': 1.2
     }
     return config
 
-def create_model_and_optimizer():
+# ========================================
+# DATA LOADING
+# ========================================
+
+def create_data_loaders():
+    """Create train and test dataloaders using dataset factory"""
+    print("Creating data loaders...")
+    
+    # Create dataset configuration
+    dataset_config = create_dataset_config()
+    
+    # Validate configuration
+    validate_dataset_config(dataset_config)
+    
+    # Create dataloaders using dataset factory
+    train_loader, test_loader, dataset_info = create_dataloaders(dataset_config)
+    
+    print(f"Dataset: {dataset_info['name'].upper()}")
+    print(f"Classes: {dataset_info['num_classes']}")
+    print(f"AutoAugment: {'Enabled' if dataset_info['use_autoaugment'] else 'Disabled'}")
+    print(f"Mean: {dataset_info['mean']}")
+    print(f"Std: {dataset_info['std']}")
+    
+    return train_loader, test_loader, dataset_info
+
+# ========================================
+# MODEL CREATION
+# ========================================
+
+def create_model_and_optimizer(dataset_info):
     """Create model and optimizer"""
     print("\nCreating model...")
     
-    config = create_config()
-    model = create_model(config).to(device)
+    # Create model config with dataset info
+    model_config = create_model_config()
+    model_config['NUM_CLASSES'] = dataset_info['num_classes']
+    
+    # Create model
+    model = create_model(model_config).to(device)
     
     param_count = count_parameters(model)
-    print(f" Model created: {param_count:,} parameters")
+    print(f"Model created: {param_count:,} parameters")
     
     # Create optimizer
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
@@ -216,7 +166,7 @@ def create_model_and_optimizer():
     else:
         scheduler = None
     
-    return model, optimizer, scheduler
+    return model, optimizer, scheduler, model_config
 
 # ========================================
 # TRAINING FUNCTIONS
@@ -241,6 +191,8 @@ def test_model(model, test_loader):
 
 def train_epoch(model, train_loader, optimizer, criterion, epoch):
     """Train one epoch"""
+    from tqdm import tqdm
+    
     model.train()
     running_loss = 0.0
     correct = 0
@@ -283,7 +235,7 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch):
     
     return epoch_loss, epoch_acc
 
-def save_checkpoint(model, epoch, loss, acc):
+def save_checkpoint(model, epoch, loss, acc, model_config):
     """Save model checkpoint"""
     os.makedirs(SAVE_DIR, exist_ok=True)
     checkpoint_path = os.path.join(SAVE_DIR, f'model_epoch_{epoch+1}.pth')
@@ -293,12 +245,7 @@ def save_checkpoint(model, epoch, loss, acc):
         'model_state_dict': model.state_dict(),
         'loss': loss,
         'accuracy': acc,
-        'config': {
-            'NUM_TIMESTEPS': NUM_TIMESTEPS,
-            'WIDTH_MULT': WIDTH_MULT,
-            'INIT_THRESHOLD': INIT_THRESHOLD,
-            'NUM_CLASSES': NUM_CLASSES
-        }
+        'config': model_config
     }, checkpoint_path)
     
     print(f"Checkpoint saved: {checkpoint_path}")
@@ -311,10 +258,10 @@ def main():
     """Main training function"""
     
     # Create data loaders
-    train_loader, test_loader = create_dataloaders()
+    train_loader, test_loader, dataset_info = create_data_loaders()
     
     # Create model
-    model, optimizer, scheduler = create_model_and_optimizer()
+    model, optimizer, scheduler, model_config = create_model_and_optimizer(dataset_info)
     
     # Loss function
     criterion = nn.CrossEntropyLoss()
@@ -329,7 +276,7 @@ def main():
     
     start_time = time.time()
     
-    # Training loop - Run all epochs without testing between epochs
+    # Training loop
     for epoch in range(NUM_EPOCHS):
         
         # Train one epoch
@@ -349,7 +296,7 @@ def main():
         
         # Save periodic checkpoint
         if (epoch + 1) % SAVE_EVERY == 0:
-            save_checkpoint(model, epoch, train_loss, 0)  # No test_acc during training
+            save_checkpoint(model, epoch, train_loss, train_acc, model_config)
         
         print("-" * 30)
     
@@ -361,10 +308,6 @@ def main():
     
     # After training completes, run comprehensive inference testing
     print("\nPerforming inference benchmark testing...")
-    
-    # Import necessary classes from utils.training
-    sys.path.append('utils')
-    from utils.training import EnergyMonitor, InferenceBenchmark
     
     # Create energy monitor
     energy_monitor = EnergyMonitor(device)
@@ -390,7 +333,8 @@ def main():
             'model_state_dict': model.state_dict(),
             'final_accuracy': test_acc,
             'benchmark_results': benchmark_results,
-            'config': create_config()
+            'model_config': model_config,
+            'dataset_info': dataset_info
         }, final_path)
         print(f"Final model saved: {final_path}")
     
@@ -402,7 +346,8 @@ def main():
         'test_acc': test_acc,
         'best_accuracy': best_acc,
         'training_time': training_time,
-        'benchmark_results': benchmark_results
+        'benchmark_results': benchmark_results,
+        'dataset_info': dataset_info
     }
 
 # ========================================

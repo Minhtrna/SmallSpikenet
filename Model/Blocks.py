@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import sys
-import os
 from Neurons import LM_HT_LIF
 from Neurons.neurons import LM_HT_LIF
 

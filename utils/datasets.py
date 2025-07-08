@@ -1,6 +1,5 @@
 """
 Dataset management and data augmentation for SmallSpikenet
-Supports CIFAR-10 and CIFAR-100 datasets with configurable augmentation
 """
 
 import torch
@@ -30,119 +29,47 @@ DATASET_CONFIGS = {
 }
 
 # ========================================
-# DATA AUGMENTATION POLICIES
+# DATA AUGMENTATION
 # ========================================
 
-class DataAugmentationPolicy:
+def get_transforms(dataset_name, use_autoaugment=False):
     """
-    Configurable data augmentation policies for different training strategies
+    Get train and test transforms with fixed augmentation
+    
+    Args:
+        dataset_name (str): Name of the dataset
+        use_autoaugment (bool): Whether to use AutoAugment
+        
+    Returns:
+        tuple: (train_transform, test_transform)
     """
+    dataset_config = DATASET_CONFIGS[dataset_name]
     
-    @staticmethod
-    def get_basic_policy(dataset_name, config):
-        """Basic augmentation policy - standard transforms"""
-        dataset_config = DATASET_CONFIGS[dataset_name]
-        
-        train_transforms = []
-        test_transforms = []
-        
-        # Training augmentations
-        if config.get('RANDOM_CROP_PADDING', 0) > 0:
-            train_transforms.append(
-                transforms.RandomCrop(32, padding=config['RANDOM_CROP_PADDING'])
-            )
-        
-        if config.get('RANDOM_HORIZONTAL_FLIP', False):
-            train_transforms.append(transforms.RandomHorizontalFlip())
-        
-        # Common transforms
-        common_transforms = [
-            transforms.ToTensor(),
-            transforms.Normalize(dataset_config['mean'], dataset_config['std'])
-        ]
-        
-        train_transforms.extend(common_transforms)
-        test_transforms.extend(common_transforms)
-        
-        return transforms.Compose(train_transforms), transforms.Compose(test_transforms)
+    # Training transforms with fixed augmentation
+    train_transforms = []
     
-    @staticmethod
-    def get_enhanced_policy(dataset_name, config):
-        """Enhanced augmentation policy - more aggressive transforms"""
-        dataset_config = DATASET_CONFIGS[dataset_name]
-        
-        train_transforms = []
-        
-        # Enhanced training augmentations
-        if config.get('RANDOM_CROP_PADDING', 0) > 0:
-            train_transforms.append(
-                transforms.RandomCrop(32, padding=config['RANDOM_CROP_PADDING'])
-            )
-        
-        if config.get('RANDOM_HORIZONTAL_FLIP', False):
-            train_transforms.append(transforms.RandomHorizontalFlip())
-        
-        # Additional augmentations for enhanced policy
-        if config.get('RANDOM_ROTATION', 0) > 0:
-            train_transforms.append(
-                transforms.RandomRotation(degrees=config['RANDOM_ROTATION'])
-            )
-        
-        if config.get('COLOR_JITTER', False):
-            train_transforms.append(
-                transforms.ColorJitter(
-                    brightness=config.get('COLOR_JITTER_BRIGHTNESS', 0.2),
-                    contrast=config.get('COLOR_JITTER_CONTRAST', 0.2),
-                    saturation=config.get('COLOR_JITTER_SATURATION', 0.2),
-                    hue=config.get('COLOR_JITTER_HUE', 0.1)
-                )
-            )
-        
-        if config.get('RANDOM_ERASING', False):
-            train_transforms.extend([
-                transforms.ToTensor(),
-                transforms.RandomErasing(
-                    p=config.get('RANDOM_ERASING_PROB', 0.5),
-                    scale=config.get('RANDOM_ERASING_SCALE', (0.02, 0.33)),
-                    ratio=config.get('RANDOM_ERASING_RATIO', (0.3, 3.3))
-                ),
-                transforms.Normalize(dataset_config['mean'], dataset_config['std'])
-            ])
-        else:
-            train_transforms.extend([
-                transforms.ToTensor(),
-                transforms.Normalize(dataset_config['mean'], dataset_config['std'])
-            ])
-        
-        # Test transforms (no augmentation)
-        test_transforms = [
-            transforms.ToTensor(),
-            transforms.Normalize(dataset_config['mean'], dataset_config['std'])
-        ]
-        
-        return transforms.Compose(train_transforms), transforms.Compose(test_transforms)
+    # AutoAugment (optional)
+    if use_autoaugment:
+        if dataset_name == 'cifar10':
+            train_transforms.append(transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10))
+        elif dataset_name == 'cifar100':
+            train_transforms.append(transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10))  # Use CIFAR10 policy for CIFAR100
     
-    @staticmethod
-    def get_light_policy(dataset_name, config):
-        """Light augmentation policy - minimal transforms for energy efficiency"""
-        dataset_config = DATASET_CONFIGS[dataset_name]
-        
-        train_transforms = []
-        
-        # Minimal training augmentations
-        if config.get('RANDOM_HORIZONTAL_FLIP', False):
-            train_transforms.append(transforms.RandomHorizontalFlip())
-        
-        # Common transforms
-        common_transforms = [
-            transforms.ToTensor(),
-            transforms.Normalize(dataset_config['mean'], dataset_config['std'])
-        ]
-        
-        train_transforms.extend(common_transforms)
-        test_transforms = common_transforms.copy()
-        
-        return transforms.Compose(train_transforms), transforms.Compose(test_transforms)
+    # Fixed augmentations
+    train_transforms.extend([
+        transforms.RandomCrop(32, padding=4),  # Fixed padding of 4
+        transforms.RandomHorizontalFlip(),     # Fixed probability of 0.5
+        transforms.ToTensor(),
+        transforms.Normalize(dataset_config['mean'], dataset_config['std'])
+    ])
+    
+    # Test transforms (no augmentation)
+    test_transforms = [
+        transforms.ToTensor(),
+        transforms.Normalize(dataset_config['mean'], dataset_config['std'])
+    ]
+    
+    return transforms.Compose(train_transforms), transforms.Compose(test_transforms)
 
 # ========================================
 # DATASET FACTORY
@@ -167,24 +94,15 @@ class DatasetFactory:
         self.config['DATASET_MEAN'] = self.dataset_config['mean']
         self.config['DATASET_STD'] = self.dataset_config['std']
     
-    def get_transforms(self):
-        """Get train and test transforms based on augmentation policy"""
-        augmentation_policy = self.config.get('AUGMENTATION_POLICY', 'basic')
-        
-        if augmentation_policy == 'enhanced':
-            return DataAugmentationPolicy.get_enhanced_policy(self.dataset_name, self.config)
-        elif augmentation_policy == 'light':
-            return DataAugmentationPolicy.get_light_policy(self.dataset_name, self.config)
-        else:  # basic
-            return DataAugmentationPolicy.get_basic_policy(self.dataset_name, self.config)
-    
     def create_datasets(self):
         """Create train and test datasets"""
-        transform_train, transform_test = self.get_transforms()
+        use_autoaugment = self.config.get('USE_AUTOAUGMENT', False)
+        transform_train, transform_test = get_transforms(self.dataset_name, use_autoaugment)
         
         print(f"Loading {self.dataset_name.upper()} dataset...")
         print(f"Dataset config: {self.dataset_config['num_classes']} classes")
-        print(f"Augmentation policy: {self.config.get('AUGMENTATION_POLICY', 'basic')}")
+        print(f"AutoAugment: {'Enabled' if use_autoaugment else 'Disabled'}")
+        print(f"Fixed augmentations: RandomCrop(32, padding=4), RandomHorizontalFlip()")
         
         # Create datasets
         dataset_class = self.dataset_config['dataset_class']
@@ -244,7 +162,7 @@ class DatasetFactory:
             'num_classes': self.dataset_config['num_classes'],
             'mean': self.dataset_config['mean'],
             'std': self.dataset_config['std'],
-            'augmentation_policy': self.config.get('AUGMENTATION_POLICY', 'basic')
+            'use_autoaugment': self.config.get('USE_AUTOAUGMENT', False)
         }
 
 # ========================================
@@ -319,12 +237,6 @@ def validate_dataset_config(config):
     if dataset_name not in DATASET_CONFIGS:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
     
-    augmentation_policy = config.get('AUGMENTATION_POLICY', 'basic')
-    valid_policies = ['basic', 'enhanced', 'light']
-    
-    if augmentation_policy not in valid_policies:
-        raise ValueError(f"Invalid augmentation policy: {augmentation_policy}. Valid options: {valid_policies}")
-    
     return True
 
 # ========================================
@@ -389,39 +301,32 @@ def visualize_samples(dataloader, dataset_info, num_samples=8):
 def test_dataset_factory():
     """Test the dataset factory with sample configurations"""
     
-    # Test CIFAR-10
+    # Test CIFAR-10 without AutoAugment
     config_cifar10 = {
         'DATASET': 'cifar10',
         'DATA_DIR': './data',
         'BATCH_SIZE': 32,
         'NUM_WORKERS': 2,
         'PIN_MEMORY': True,
-        'AUGMENTATION_POLICY': 'basic',
-        'RANDOM_CROP_PADDING': 4,
-        'RANDOM_HORIZONTAL_FLIP': True
+        'USE_AUTOAUGMENT': False
     }
     
-    print("Testing CIFAR-10...")
+    print("Testing CIFAR-10 (without AutoAugment)...")
     train_loader, test_loader, dataset_info = create_dataloaders(config_cifar10)
     print(f"Dataset info: {dataset_info}")
     print()
     
-    # Test CIFAR-100
+    # Test CIFAR-100 with AutoAugment
     config_cifar100 = {
         'DATASET': 'cifar100',
         'DATA_DIR': './data',
         'BATCH_SIZE': 64,
         'NUM_WORKERS': 2,
         'PIN_MEMORY': True,
-        'AUGMENTATION_POLICY': 'enhanced',
-        'RANDOM_CROP_PADDING': 4,
-        'RANDOM_HORIZONTAL_FLIP': True,
-        'RANDOM_ROTATION': 15,
-        'COLOR_JITTER': True,
-        'RANDOM_ERASING': True
+        'USE_AUTOAUGMENT': True
     }
     
-    print("Testing CIFAR-100...")
+    print("Testing CIFAR-100 (with AutoAugment)...")
     train_loader, test_loader, dataset_info = create_dataloaders(config_cifar100)
     print(f"Dataset info: {dataset_info}")
 

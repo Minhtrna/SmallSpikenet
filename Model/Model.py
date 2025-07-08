@@ -1,62 +1,6 @@
 import torch
 import torch.nn as nn
-import os
-import sys
-from utils.config import get_config, print_config, validate_config
-from utils.training import train_model, test_model, count_parameters
-from utils.datasets import create_dataloaders, validate_dataset_config
 from Blocks import ConvBNLIF, SimpleInvertedResidual
-
-# ========================================
-# CONFIGURATION SETUP
-# ========================================
-
-# Select experiment configuration
-EXPERIMENT = 'default'  # Options: 'default', 'cifar100', 'high_accuracy', 'energy_efficient', etc.
-
-# Get configuration
-config = get_config(EXPERIMENT)
-validate_config(config)
-validate_dataset_config(config)
-
-# Print configuration
-print_config(config, EXPERIMENT)
-
-# ========================================
-# SETUP DIRECTORIES AND DEVICE
-# ========================================
-
-# Create directories
-os.makedirs(config['SAVE_DIR'], exist_ok=True)
-os.makedirs(config['RESULTS_DIR'], exist_ok=True)
-os.makedirs(config['DATA_DIR'], exist_ok=True)
-
-# Device setup
-if config['DEVICE'] == 'auto':
-    device = torch.device('cuda' if torch.cuda.is_available() and config['USE_CUDA'] else 'cpu')
-else:
-    device = torch.device(config['DEVICE'])
-
-print(f"Using device: {device}")
-
-# Enable performance optimizations
-if config['CUDNN_BENCHMARK']:
-    torch.backends.cudnn.benchmark = True
-
-# ========================================
-# DATA LOADING
-# ========================================
-
-# Create dataloaders using the datasets module
-print("Setting up datasets...")
-train_loader, test_loader, dataset_info = create_dataloaders(config)
-
-print(f"\nDataset Information:")
-print(f"  Name: {dataset_info['name'].upper()}")
-print(f"  Classes: {dataset_info['num_classes']}")
-print(f"  Augmentation: {dataset_info['augmentation_policy']}")
-print(f"  Mean: {dataset_info['mean']}")
-print(f"  Std: {dataset_info['std']}")
 
 # ========================================
 # MODEL DEFINITION
@@ -162,22 +106,4 @@ class MiniMobileNetV2LIF(nn.Module):
 def create_model(config):
     """Create model with configuration"""
     return MiniMobileNetV2LIF(config)
-
-# ========================================
-# MAIN EXECUTION
-# ========================================
-
-#if __name__ == "__main__":
-#    # Create model
-#    print("\nCreating model...")
-#    model = create_model(config).to(device)
-#    print("Model created.")
-#    
-#    print(f"Model has {count_parameters(model):,} trainable parameters")
-    
-    # Start training
-#    print(f"\nStarting training on {dataset_info['name'].upper()} with {dataset_info['num_classes']} classes...")
-#    training_results = train_model(model, train_loader, test_loader, config, device)
-    
-#    print("Training completed successfully!")
 

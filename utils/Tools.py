@@ -17,7 +17,7 @@ pynvml.nvmlInit()
 
 class EnergyMonitor:
     """
-    Monitor GPU energy consumption during training and inference
+    Monitor GPU energy consumption during training and inference with improved accuracy
     """
     def __init__(self, device):
         self.device = device
@@ -27,7 +27,7 @@ class EnergyMonitor:
         if self.gpu_available:
             try:
                 self.gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                self.gpu_max_power = pynvml.nvmlDeviceGetPowerManagementLimit(self.gpu_handle) / 1000.0  # Convert to watts
+                self.gpu_max_power = pynvml.nvmlDeviceGetPowerManagementLimit(self.gpu_handle) / 1000.0
                 print(f"GPU max power: {self.gpu_max_power:.2f}W")
             except Exception as e:
                 print(f"Warning: Could not initialize GPU power monitoring: {e}")
@@ -44,10 +44,14 @@ class EnergyMonitor:
         self.measurement_count = 0
         self.start_time = None
         self.end_time = None
+        self.baseline_power = 0.0  # NEW: Track baseline power
+        self.power_samples = []    # NEW: Store power samples
     
     def start_measurement(self):
-        """Start energy measurement"""
+        """Start energy measurement with baseline power measurement"""
         self.reset_measurements()
+        # Measure baseline power before starting
+        self.measure_baseline_power()
         self.start_time = time.time()
     
     def measure_gpu_power(self):
@@ -69,29 +73,99 @@ class EnergyMonitor:
         
         return gpu_power
     
-    def add_measurement(self, duration_ms=100):
-        """Add a GPU power measurement over specified duration"""
-        gpu_power = self.measure_gpu_power()
+    def measure_baseline_power(self, num_samples=5):
+        """Measure baseline GPU power consumption when idle"""
+        if not self.gpu_available:
+            self.baseline_power = 0.0
+            return 0.0
         
-        # Convert power (W) to energy (mJ) over the measurement duration
+        baseline_samples = []
+        for _ in range(num_samples):
+            power = self.measure_gpu_power()
+            baseline_samples.append(power)
+            time.sleep(0.01)  # 10ms between samples
+        
+        self.baseline_power = np.mean(baseline_samples) if baseline_samples else 0.0
+        print(f"Baseline GPU power: {self.baseline_power:.1f}W")
+        return self.baseline_power
+    
+    def add_measurement_improved(self, duration_ms=100):
+        """
+        Improved energy measurement with multiple power samples and baseline correction
+        """
+        if not self.gpu_available:
+            return 0.0
+        
         duration_s = duration_ms / 1000.0
-        gpu_energy_mj = gpu_power * duration_s * 1000  # W * s * 1000 = mJ
+        
+        # Take multiple power samples right after inference
+        power_samples = []
+        sample_start = time.time()
+        
+        # Sample for a short period after inference (max 10ms to avoid overhead)
+        sample_duration = min(0.01, duration_s * 0.1)  # 10ms or 10% of inference time
+        
+        while (time.time() - sample_start) < sample_duration:
+            power = self.measure_gpu_power()
+            power_samples.append(power)
+            time.sleep(0.001)  # 1ms between samples
+        
+        if len(power_samples) > 0:
+            # Calculate statistics
+            avg_power = np.mean(power_samples)
+            max_power = np.max(power_samples)
+            min_power = np.min(power_samples)
+            
+            # Store samples for analysis
+            self.power_samples.extend(power_samples)
+            
+            # Calculate net inference power (subtract baseline)
+            net_inference_power = max(0, avg_power - self.baseline_power)
+            
+            # Calculate energy using net inference power
+            gpu_energy_mj = net_inference_power * duration_s * 1000  # W * s * 1000 = mJ
+            
+            print(f"Power: Baseline={self.baseline_power:.1f}W, "
+                  f"Avg={avg_power:.1f}W, Range={min_power:.1f}-{max_power:.1f}W, "
+                  f"Net={net_inference_power:.1f}W, Samples={len(power_samples)}")
+        else:
+            gpu_energy_mj = 0.0
         
         self.total_gpu_energy += gpu_energy_mj
         self.measurement_count += 1
         
         return gpu_energy_mj
     
+    def add_measurement(self, duration_ms=100):
+        """Add energy measurement - now uses improved method"""
+        return self.add_measurement_improved(duration_ms)
+    
     def end_measurement(self):
-        """End energy measurement and return results"""
+        """End energy measurement and return results with detailed statistics"""
         self.end_time = time.time()
         total_time = self.end_time - self.start_time if self.start_time else 0.0
         
+        # Calculate power statistics
+        if self.power_samples:
+            avg_measured_power = np.mean(self.power_samples)
+            max_measured_power = np.max(self.power_samples)
+            min_measured_power = np.min(self.power_samples)
+            std_measured_power = np.std(self.power_samples)
+            net_avg_power = max(0, avg_measured_power - self.baseline_power)
+        else:
+            avg_measured_power = max_measured_power = min_measured_power = std_measured_power = net_avg_power = 0.0
+        
         results = {
             'gpu_energy_mj': self.total_gpu_energy,
-            'total_energy_mj': self.total_gpu_energy,  # Only GPU energy now
+            'total_energy_mj': self.total_gpu_energy,  # Only GPU energy
             'measurement_time_s': total_time,
-            'avg_gpu_power_w': self.total_gpu_energy / (total_time * 1000) if total_time > 0 else 0.0,
+            'baseline_power_w': self.baseline_power,
+            'avg_measured_power_w': avg_measured_power,
+            'max_measured_power_w': max_measured_power,
+            'min_measured_power_w': min_measured_power,
+            'std_measured_power_w': std_measured_power,
+            'net_inference_power_w': net_avg_power,
+            'power_samples_count': len(self.power_samples),
             'measurement_count': self.measurement_count
         }
         
@@ -300,7 +374,7 @@ class InferenceBenchmark:
     
     def benchmark_inference(self, test_loader, num_batches=10):
         """
-        Benchmark inference performance on test data with operations counting
+        Benchmark inference performance on test data with improved energy monitoring
         """
         print(f"\n=== Starting Inference Benchmark ({num_batches} batches) ===")
         
@@ -331,7 +405,7 @@ class InferenceBenchmark:
             for batch_idx, (images, labels) in enumerate(benchmark_batches):
                 batch_size = images.size(0)
                 
-                # Start energy measurement
+                # Start energy measurement (now includes baseline measurement)
                 self.energy_monitor.start_measurement()
                 
                 # Measure inference time
@@ -345,11 +419,11 @@ class InferenceBenchmark:
                 torch.cuda.synchronize() if self.device.type == 'cuda' else None
                 end_time = time.perf_counter()
                 
-                # End energy measurement
+                # Calculate inference time
                 inference_time_ms = (end_time - start_time) * 1000
                 
                 # Add energy measurement for the actual inference duration
-                cpu_energy, gpu_energy = self.energy_monitor.add_measurement(inference_time_ms)
+                gpu_energy = self.energy_monitor.add_measurement(inference_time_ms)
                 energy_results = self.energy_monitor.end_measurement()
                 
                 # Calculate operations for this batch
@@ -371,19 +445,27 @@ class InferenceBenchmark:
                 # Calculate energy per operation
                 energy_per_op = energy_results['total_energy_mj'] / total_ops * 1e6  # Convert to nJ/Op
                 
+                # Enhanced batch output with power details
                 print(f"Batch {batch_idx+1}/{num_batches}: "
                       f"Time: {inference_time_ms:.2f}ms, "
                       f"Energy: {energy_results['total_energy_mj']:.2f}mJ, "
-                      f"Energy/Op: {energy_per_op:.2f}nJ/Op, "
+                      f"Baseline: {energy_results.get('baseline_power_w', 0):.1f}W, "
+                      f"Net Power: {energy_results.get('net_inference_power_w', 0):.1f}W, "
+                      f"Energy/Op: {energy_per_op:.3f}nJ/Op, "
                       f"Acc: {batch_acc:.1f}%")
-        
-        # Calculate statistics
+
+        # Calculate statistics with enhanced energy metrics
         avg_inference_time = np.mean(inference_times)
         std_inference_time = np.std(inference_times)
         avg_total_energy = np.mean([e['total_energy_mj'] for e in energy_measurements])
-        avg_cpu_energy = np.mean([e['cpu_energy_mj'] for e in energy_measurements])
-        avg_gpu_energy = np.mean([e['gpu_energy_mj'] for e in energy_measurements])
+        avg_gpu_energy = avg_total_energy  # Only GPU energy now
         total_ops_per_batch = np.mean([e['total_ops'] for e in energy_measurements])
+        
+        # Enhanced power statistics
+        avg_baseline_power = np.mean([e.get('baseline_power_w', 0) for e in energy_measurements])
+        avg_measured_power = np.mean([e.get('avg_measured_power_w', 0) for e in energy_measurements])
+        avg_net_power = np.mean([e.get('net_inference_power_w', 0) for e in energy_measurements])
+        avg_power_samples = np.mean([e.get('power_samples_count', 0) for e in energy_measurements])
         
         # Calculate per-sample metrics
         samples_per_batch = benchmark_batches[0][0].size(0)
@@ -396,29 +478,43 @@ class InferenceBenchmark:
         ops_per_second = total_ops_per_batch * 1000 / avg_inference_time  # ops/sec
         
         benchmark_results = {
+            # Timing metrics
             'avg_inference_time_ms': avg_inference_time,
             'std_inference_time_ms': std_inference_time,
             'avg_time_per_sample_ms': avg_time_per_sample,
+            
+            # Energy metrics
             'avg_total_energy_mj': avg_total_energy,
-            'avg_cpu_energy_mj': avg_cpu_energy,
             'avg_gpu_energy_mj': avg_gpu_energy,
             'avg_energy_per_sample_mj': avg_energy_per_sample,
             'avg_energy_per_op_mj': avg_energy_per_op_mj,
             'avg_energy_per_op_nj': avg_energy_per_op_nj,
+            
+            # Enhanced power metrics
+            'avg_baseline_power_w': avg_baseline_power,
+            'avg_measured_power_w': avg_measured_power,
+            'avg_net_inference_power_w': avg_net_power,
+            'avg_power_samples_count': avg_power_samples,
+            
+            # Operations metrics
             'flops_per_inference': self.flops_per_inference,
             'total_ops_per_batch': total_ops_per_batch,
             'ops_per_second': ops_per_second,
+            
+            # Efficiency metrics
             'throughput_samples_per_sec': (samples_per_batch * 1000) / avg_inference_time,
             'energy_efficiency_samples_per_mj': samples_per_batch / avg_total_energy,
             'energy_efficiency_ops_per_mj': total_ops_per_batch / avg_total_energy,
+            
+            # Metadata
             'num_batches': num_batches,
             'batch_size': samples_per_batch
         }
         
         return benchmark_results
-    
+
     def print_benchmark_results(self, results):
-        """Print detailed benchmark results with operations metrics"""
+        """Print detailed benchmark results with enhanced energy metrics"""
         print(f"\n=== Inference Benchmark Results ===")
         print(f"Number of batches:           {results['num_batches']}")
         print(f"Batch size:                  {results['batch_size']}")
@@ -430,17 +526,21 @@ class InferenceBenchmark:
         print(f"  Throughput:                {results['throughput_samples_per_sec']:.1f} samples/sec")
         print(f"  Operations throughput:     {results['ops_per_second']:.0f} ops/sec")
         print(f"")
+        print(f"Power Analysis:")
+        print(f"  Avg baseline power:        {results.get('avg_baseline_power_w', 0):.1f}W")
+        print(f"  Avg measured power:        {results.get('avg_measured_power_w', 0):.1f}W")
+        print(f"  Avg net inference power:   {results.get('avg_net_inference_power_w', 0):.1f}W")
+        print(f"  Avg power samples/batch:   {results.get('avg_power_samples_count', 0):.1f}")
+        print(f"")
         print(f"Energy Consumption:")
         print(f"  Avg total energy:          {results['avg_total_energy_mj']:.2f} mJ")
-        print(f"  Avg CPU energy:            {results['avg_cpu_energy_mj']:.2f} mJ")
-        print(f"  Avg GPU energy:            {results['avg_gpu_energy_mj']:.2f} mJ")
         print(f"  Avg energy per sample:     {results['avg_energy_per_sample_mj']:.3f} mJ")
-        print(f"  Avg energy per operation:  {results['avg_energy_per_op_nj']:.2f} nJ/Op")
+        print(f"  Avg energy per operation:  {results['avg_energy_per_op_nj']:.3f} nJ/Op")
         print(f"")
         print(f"Efficiency Metrics:")
         print(f"  Energy efficiency:         {results['energy_efficiency_samples_per_mj']:.2f} samples/mJ")
         print(f"  Operations efficiency:     {results['energy_efficiency_ops_per_mj']:.0f} ops/mJ")
-        print(f"  Energy per operation:      {results['avg_energy_per_op_nj']:.2f} nJ/Op")
+        print(f"  Computational intensity:   {results['flops_per_inference'] / (results['avg_inference_time_ms'] / 1000):.0f} ops/sec")
         print(f"=====================================\n")
 
 # ========================================
