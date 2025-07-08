@@ -1,6 +1,6 @@
 """
 Main execution script for training SmallSpikenet on CIFAR-10 or CIFAR-100 datasets.
-This script handles dataset loading, model creation, training, and testing.
+This script handles dataset loading, model creation, training, and inference benchmarking.
 """
 import torch
 import torch.nn as nn
