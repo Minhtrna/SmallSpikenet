@@ -1,3 +1,3 @@
 # SmallSpikenet
 
-This is the implement of LM-HT-Mobilnet
+This is the implement of SmallSpikenet
