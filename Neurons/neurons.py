@@ -120,7 +120,6 @@ class LM_HT_LIF(neuron.BaseNode):
     
         # Handle first forward pass with proper detach behavior
         if self.first_forward:
-            # Now we know self.v and self.memory are tensors with right shape
             v_for_update = self.v.detach()
             memory_for_update = self.memory.detach()
             self.first_forward = False
@@ -137,7 +136,7 @@ class LM_HT_LIF(neuron.BaseNode):
         # Apply leakage formula
         v_new = leakage_factor * v_for_update + (1 - leakage_factor) * x
         
-        # CHANGE: Store without detach to maintain gradient flow
+
         self.memory = memory_new  # No detach
         self.v = v_new  # No detach
         
