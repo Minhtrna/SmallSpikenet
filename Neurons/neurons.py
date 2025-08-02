@@ -23,7 +23,7 @@ class SurrogateGradient(torch.autograd.Function):
     def backward(ctx, grad_output):
         input_, threshold = ctx.saved_tensors
         num_thresholds = ctx.num_thresholds
-        alpha = 2.0  # Giảm alpha để stable
+        alpha = 2.0  # alpha for sigmoid derivative
         
         # Multi-threshold gradient: sum of sigmoid derivatives for each level
         theta_base = threshold / num_thresholds
@@ -43,7 +43,7 @@ class SurrogateGradient(torch.autograd.Function):
         sigmoid_vals = torch.sigmoid(scaled_x)
         sigmoid_derivatives = sigmoid_vals * (1.0 - sigmoid_vals) * alpha / theta_base
         
-        # Enhanced weighting cho better learning
+        #  weighting 
         proximity_weights = torch.exp(-0.5 * (x_shifted / theta_base) ** 2)  # Gaussian proximity
         level_weights = (levels / num_thresholds) ** 0.5  # Moderate level bias
         combined_weights = proximity_weights * level_weights.unsqueeze(0)
@@ -51,7 +51,7 @@ class SurrogateGradient(torch.autograd.Function):
         # Apply weighting
         weighted_derivatives = sigmoid_derivatives * combined_weights
         
-        # Normalize by total weight để tránh gradient explosion
+        # Normalize by total weight 
         total_weights = combined_weights.sum(dim=-1, keepdim=True) + 1e-8
         grad_input = (weighted_derivatives * grad_output.unsqueeze(-1)).sum(dim=-1) / total_weights.squeeze(-1)
         

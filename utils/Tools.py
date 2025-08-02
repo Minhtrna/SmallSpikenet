@@ -1,4 +1,3 @@
-
 """
 This file contains utilities for training and benchmarking SmallSpikenet models.
 """
@@ -14,7 +13,13 @@ import numpy as np
 import psutil
 import pynvml
 pynvml.nvmlInit()
-# Add energy measurement imports
+
+# Add wandb import
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 # ========================================
 # ENERGY MONITORING
@@ -759,3 +764,178 @@ def train_model(model, train_loader, test_loader, config, device):
 def count_parameters(model):
     """Count trainable parameters"""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+# ========================================
+# WANDB LOGGING UTILITIES
+# ========================================
+
+class WandbLogger:
+    """Lightweight wandb logging wrapper that can be enabled/disabled"""
+    
+    def __init__(self, enabled=False, config=None):
+        self.enabled = enabled and WANDB_AVAILABLE
+        self.run = None
+        
+        if enabled and not WANDB_AVAILABLE:
+            print("Warning: wandb not installed. Logging disabled.")
+            self.enabled = False
+        
+        if self.enabled and config:
+            self.init_wandb(config)
+    
+    def init_wandb(self, config):
+        """Initialize wandb if enabled"""
+        if not self.enabled:
+            return
+        
+        run_name = config.get('WANDB_RUN_NAME') or f"SmallSpikenet_{config['DATASET']}_T{config['NUM_TIMESTEPS']}_W{config['WIDTH_MULT']}"
+        
+        self.run = wandb.init(
+            project=config.get('WANDB_PROJECT', 'SmallSpikenet'),
+            entity=config.get('WANDB_ENTITY', None),
+            name=run_name,
+            config=config,
+            tags=[f"dataset_{config['DATASET']}", f"timesteps_{config['NUM_TIMESTEPS']}", "SNN"]
+        )
+        
+        if self.run:
+            print(f"Wandb initialized: {self.run.url}")
+    
+    def watch_model(self, model):
+        """Watch model for gradients"""
+        if self.enabled and self.run:
+            wandb.watch(model, log="all", log_freq=100)
+    
+    def log(self, data):
+        """Log data to wandb"""
+        if self.enabled and self.run:
+            wandb.log(data)
+    
+    def log_artifact(self, filepath, name, type="model", description=""):
+        """Log artifact to wandb"""
+        if self.enabled and self.run:
+            try:
+                artifact = wandb.Artifact(name=name, type=type, description=description)
+                artifact.add_file(filepath)
+                wandb.log_artifact(artifact)
+            except Exception as e:
+                print(f"Warning: Could not log artifact {name}: {e}")
+    
+    def finish(self):
+        """Finish wandb run"""
+        if self.enabled and self.run:
+            wandb.finish()
+
+# ========================================
+# WANDB HELPER FUNCTIONS
+# ========================================
+
+def create_wandb_config(
+    dataset, num_epochs, batch_size, learning_rate, weight_decay,
+    num_timesteps, width_mult, init_threshold, dropout_rate, 
+    num_thresholds, leakage, memory_factor, reset_mode,
+    lr_scheduler, grad_clip_norm, use_autoaugment, device,
+    wandb_project='SmallSpikenet', wandb_entity=None, wandb_run_name=None
+):
+    """Create wandb configuration dictionary"""
+    return {
+        'DATASET': dataset,
+        'NUM_EPOCHS': num_epochs,
+        'BATCH_SIZE': batch_size,
+        'LEARNING_RATE': learning_rate,
+        'WEIGHT_DECAY': weight_decay,
+        'NUM_TIMESTEPS': num_timesteps,
+        'WIDTH_MULT': width_mult,
+        'INIT_THRESHOLD': init_threshold,
+        'DROPOUT_RATE': dropout_rate,
+        'NUM_THRESHOLDS': num_thresholds,
+        'LEAKAGE': leakage,
+        'MEMORY_FACTOR': memory_factor,
+        'RESET_MODE': reset_mode,
+        'LR_SCHEDULER': lr_scheduler,
+        'GRAD_CLIP_NORM': grad_clip_norm,
+        'USE_AUTOAUGMENT': use_autoaugment,
+        'DEVICE': str(device),
+        'ARCHITECTURE': 'MiniMobileNetV2LIF',
+        'WANDB_PROJECT': wandb_project,
+        'WANDB_ENTITY': wandb_entity,
+        'WANDB_RUN_NAME': wandb_run_name
+    }
+
+def train_epoch_with_logging(model, train_loader, optimizer, criterion, epoch, num_epochs, 
+                           grad_clip_norm, device, wandb_logger=None):
+    """Train one epoch with optional wandb logging"""
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    
+    progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+    
+    for batch_idx, (images, labels) in enumerate(progress_bar):
+        images, labels = images.to(device), labels.to(device)
+        
+        # Forward pass
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        
+        # Backward pass
+        loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+        
+        # Update weights
+        optimizer.step()
+        
+        # Statistics
+        running_loss += loss.item()
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
+        
+        # Log batch metrics every 100 batches
+        if wandb_logger and batch_idx % 100 == 0:
+            wandb_logger.log({
+                'batch_loss': loss.item(),
+                'batch_acc': 100.0 * correct / total,
+                'learning_rate': optimizer.param_groups[0]['lr'],
+                'epoch_progress': epoch + batch_idx / len(train_loader)
+            })
+        
+        # Update progress bar
+        if batch_idx % 10 == 0:
+            progress_bar.set_postfix({
+                'Loss': f'{running_loss/(batch_idx+1):.4f}',
+                'Acc': f'{100.*correct/total:.2f}%'
+            })
+    
+    epoch_loss = running_loss / len(train_loader)
+    epoch_acc = 100.0 * correct / total
+    
+    return epoch_loss, epoch_acc
+
+def save_checkpoint_with_logging(model, epoch, loss, acc, model_config, save_dir, wandb_logger=None):
+    """Save checkpoint with optional wandb logging"""
+    os.makedirs(save_dir, exist_ok=True)
+    checkpoint_path = os.path.join(save_dir, f'model_epoch_{epoch+1}.pth')
+    
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'loss': loss,
+        'accuracy': acc,
+        'config': model_config
+    }, checkpoint_path)
+    
+    print(f"Checkpoint saved: {checkpoint_path}")
+    
+    # Log to wandb if enabled
+    if wandb_logger:
+        wandb_logger.log_artifact(
+            checkpoint_path, 
+            name=f"model_epoch_{epoch+1}",
+            type="model",
+            description=f"Model checkpoint at epoch {epoch+1}"
+        )
